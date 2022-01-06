@@ -1,0 +1,6 @@
+* zig-monocle
+
+Inspect Zig source files.
+
+Provides a more easy-to-use interface to a subset of ~std.zig.Ast~. Useful for
+code generation.
