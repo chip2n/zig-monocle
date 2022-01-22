@@ -11,7 +11,6 @@ pub const ZigSource = struct {
     arena: std.heap.ArenaAllocator,
 
     decls: []const Decl,
-    fns: []const FunDecl,
 
     pub fn deinit(self: *ZigSource) void {
         self.arena.deinit();
@@ -75,9 +74,6 @@ pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
     var decls = ArrayList(Decl).init(arena.allocator());
     errdefer decls.deinit();
 
-    var fns = ArrayList(FunDecl).init(arena.allocator());
-    errdefer fns.deinit();
-
     const root_decls = tree.rootDecls();
     const tags = tree.nodes.items(.tag);
     const datas = tree.nodes.items(.data);
@@ -94,21 +90,21 @@ pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
                 switch (tags[fn_proto]) {
                     .fn_proto => {
                         const fn_decl = try parseFnProto(arena.allocator(), tree, tree.fnProto(fn_proto));
-                        if (fn_decl) |decl| try fns.append(decl);
+                        if (fn_decl) |decl| try decls.append(decl);
                     },
                     .fn_proto_one => {
                         var buffer: [1]Node.Index = undefined;
                         const fn_decl = try parseFnProto(arena.allocator(), tree, tree.fnProtoOne(&buffer, fn_proto));
-                        if (fn_decl) |decl| try fns.append(decl);
+                        if (fn_decl) |decl| try decls.append(decl);
                     },
                     .fn_proto_simple => {
                         var buffer: [1]Node.Index = undefined;
                         const fn_decl = try parseFnProto(arena.allocator(), tree, tree.fnProtoSimple(&buffer, fn_proto));
-                        if (fn_decl) |decl| try fns.append(decl);
+                        if (fn_decl) |decl| try decls.append(decl);
                     },
                     .fn_proto_multi => {
                         const fn_decl = try parseFnProto(arena.allocator(), tree, tree.fnProtoMulti(fn_proto));
-                        if (fn_decl) |decl| try fns.append(decl);
+                        if (fn_decl) |decl| try decls.append(decl);
                     },
                     else => {
                         std.log.warn("Unknown fn_proto {}", .{tags[fn_proto]});
@@ -121,13 +117,11 @@ pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
 
     return ZigSource{
         .arena = arena,
-        // TODO Remove structs and fns fields
         .decls = decls.toOwnedSlice(),
-        .fns = fns.toOwnedSlice(),
     };
 }
 
-fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?FunDecl {
+fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?Decl {
     const token_tags = tree.tokens.items(.tag);
 
     const name = try allocator.dupe(u8, tree.tokenSlice(fn_proto.ast.fn_token + 1));
@@ -162,11 +156,13 @@ fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?F
         break :blk t2 == .keyword_export;
     } else false;
 
-    return FunDecl{
-        .name = name,
-        .params = params.toOwnedSlice(),
-        .return_type = return_type,
-        .is_extern = is_extern,
+    return Decl{
+        .Fun = .{
+            .name = name,
+            .params = params.toOwnedSlice(),
+            .return_type = return_type,
+            .is_extern = is_extern,
+        },
     };
 }
 
@@ -251,8 +247,6 @@ const expectEqual = testing.expectEqual;
 const expectEqualStrings = testing.expectEqualStrings;
 const expectEqualSlices = testing.expectEqualSlices;
 
-// TODO Add test for struct with multiple fields
-
 test "struct decl" {
     const source =
         \\const Test = struct {
@@ -334,75 +328,81 @@ test "union decl" {
 }
 
 test "fn decl simple" {
-   const source =
-       \\fn testfn(a: i32) u32 {
-       \\    return a + 1;
-       \\}
-   ;
+    const source =
+        \\fn testfn(a: i32) u32 {
+        \\    return a + 1;
+        \\}
+    ;
 
-   var result = try parseZigSource(test_allocator, source);
-   defer result.deinit();
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
 
-   try expect(deepEql(
-       result.fns,
-       &.{
-           .{
-               .name = "testfn",
-               .params = &.{.{ .name = "a", .type = "i32" }},
-               .return_type = "u32",
-               .is_extern = false,
-           },
-       },
-   ));
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Fun = .{
+                    .name = "testfn",
+                    .params = &.{.{ .name = "a", .type = "i32" }},
+                    .return_type = "u32",
+                    .is_extern = false,
+                },
+            },
+        },
+    ));
 }
 
 test "fn decl multi" {
-   const source =
-       \\fn testfn(a: i32, b: i32) u32 {
-       \\    return a + b;
-       \\}
-   ;
+    const source =
+        \\fn testfn(a: i32, b: i32) u32 {
+        \\    return a + b;
+        \\}
+    ;
 
-   var result = try parseZigSource(test_allocator, source);
-   defer result.deinit();
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
 
-   try expect(deepEql(
-       result.fns,
-       &.{
-           .{
-               .name = "testfn",
-               .params = &.{
-                   .{ .name = "a", .type = "i32" },
-                   .{ .name = "b", .type = "i32" },
-               },
-               .return_type = "u32",
-               .is_extern = false,
-           },
-       },
-   ));
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Fun = .{
+                    .name = "testfn",
+                    .params = &.{
+                        .{ .name = "a", .type = "i32" },
+                        .{ .name = "b", .type = "i32" },
+                    },
+                    .return_type = "u32",
+                    .is_extern = false,
+                },
+            },
+        },
+    ));
 }
 
 test "fn decl export" {
-   const source =
-       \\export fn testfn(a: i32) u32 {
-       \\    return a + 1;
-       \\}
-   ;
+    const source =
+        \\export fn testfn(a: i32) u32 {
+        \\    return a + 1;
+        \\}
+    ;
 
-   var result = try parseZigSource(test_allocator, source);
-   defer result.deinit();
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
 
-   try expect(deepEql(
-       result.fns,
-       &.{
-           .{
-               .name = "testfn",
-               .params = &.{.{ .name = "a", .type = "i32" }},
-               .return_type = "u32",
-               .is_extern = true,
-           },
-       },
-   ));
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Fun = .{
+                    .name = "testfn",
+                    .params = &.{.{ .name = "a", .type = "i32" }},
+                    .return_type = "u32",
+                    .is_extern = true,
+                },
+            },
+        },
+    ));
 }
 
 /// Like std.meta.eql, but follows pointers where possible.
