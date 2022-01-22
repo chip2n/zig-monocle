@@ -10,7 +10,7 @@ const ArrayList = std.ArrayList;
 pub const ZigSource = struct {
     arena: std.heap.ArenaAllocator,
 
-    structs: []const StructDecl,
+    decls: []const Decl,
     fns: []const FunDecl,
 
     pub fn deinit(self: *ZigSource) void {
@@ -18,12 +18,18 @@ pub const ZigSource = struct {
     }
 };
 
-pub const StructDecl = struct {
-    name: []const u8,
-    fields: []const StructField,
+pub const Decl = union(enum) {
+    Struct: ContainerDecl,
+    Union: ContainerDecl,
+    Fun: FunDecl,
 };
 
-pub const StructField = struct {
+pub const ContainerDecl = struct {
+    name: []const u8,
+    fields: []const ContainerField,
+};
+
+pub const ContainerField = struct {
     name: []const u8,
     type: []const u8,
 };
@@ -37,6 +43,26 @@ pub const FunDecl = struct {
     name: []const u8,
     params: []const Param,
     return_type: []const u8,
+    is_extern: bool,
+};
+
+pub const ZigType = union {
+    raw: []const u8,
+    signed_integer: struct { size: usize },
+    unsigned_integer: struct { size: usize },
+    float: struct { size: usize },
+    array: ArrayType,
+    ptr: PtrType,
+};
+
+pub const ArrayType = struct {
+    sentinel: ?[]const u8,
+    elem_type: ZigType,
+    elem_count: usize,
+};
+
+pub const PtrType = struct {
+    size: std.builtin.TypeInfo.Pointer.Size,
 };
 
 pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
@@ -46,8 +72,11 @@ pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
     var tree = try zig.parse(allocator, source);
     defer tree.deinit(allocator);
 
-    var structs = ArrayList(StructDecl).init(arena.allocator());
+    var decls = ArrayList(Decl).init(arena.allocator());
+    errdefer decls.deinit();
+
     var fns = ArrayList(FunDecl).init(arena.allocator());
+    errdefer fns.deinit();
 
     const root_decls = tree.rootDecls();
     const tags = tree.nodes.items(.tag);
@@ -58,7 +87,7 @@ pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
         switch (node_tag) {
             .simple_var_decl => {
                 const s = try parseVarDecl(arena.allocator(), tree, tree.simpleVarDecl(node));
-                if (s) |s2| try structs.append(s2);
+                if (s) |s2| try decls.append(s2);
             },
             .fn_decl => {
                 const fn_proto = datas[node].lhs;
@@ -92,7 +121,8 @@ pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
 
     return ZigSource{
         .arena = arena,
-        .structs = structs.toOwnedSlice(),
+        // TODO Remove structs and fns fields
+        .decls = decls.toOwnedSlice(),
         .fns = fns.toOwnedSlice(),
     };
 }
@@ -125,50 +155,88 @@ fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?F
 
     const return_token = tree.firstToken(fn_proto.ast.return_type);
     const return_type = try allocator.dupe(u8, tree.tokenSlice(return_token));
+
+    // TODO May have multiple tokens here, so we should scan until we hit the fn token probably
+    const is_extern = if (fn_proto.extern_export_inline_token) |t| blk: {
+        const t2 = token_tags[t];
+        break :blk t2 == .keyword_export;
+    } else false;
+
     return FunDecl{
         .name = name,
         .params = params.toOwnedSlice(),
         .return_type = return_type,
+        .is_extern = is_extern,
     };
 }
 
-fn parseVarDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?StructDecl {
+fn extractContainerData(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, container_decl: Ast.full.ContainerDecl) !ContainerDecl {
+    const node_tags = tree.nodes.items(.tag);
+    const main_tokens = tree.nodes.items(.main_token);
+    const container_name = try allocator.dupe(u8, tree.tokenSlice(decl.ast.mut_token + 1));
+    const container_members = container_decl.ast.members;
+
+    var container_fields = ArrayList(ContainerField).init(allocator);
+    errdefer container_fields.deinit();
+
+    for (container_members) |member_node| {
+        const member_tag = node_tags[member_node];
+        if (member_tag != .container_field_init) continue;
+
+        const container_field_init = tree.containerFieldInit(member_node);
+        const type_main_token = main_tokens[container_field_init.ast.type_expr];
+        const name_token = container_field_init.ast.name_token;
+
+        const field_type = try allocator.dupe(u8, tree.tokenSlice(type_main_token));
+        const field_name = try allocator.dupe(u8, tree.tokenSlice(name_token));
+        try container_fields.append(.{ .name = field_name, .type = field_type });
+    }
+
+    return ContainerDecl{
+        .name = container_name,
+        .fields = container_fields.toOwnedSlice(),
+    };
+}
+
+fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, container_decl: Ast.full.ContainerDecl) !?Decl {
+    const token_tags = tree.tokens.items(.tag);
+    const token_tag = token_tags[container_decl.ast.main_token];
+
+    switch (token_tag) {
+        .keyword_struct => {
+            return Decl{ .Struct = try extractContainerData(allocator, tree, decl, container_decl) };
+        },
+        .keyword_union => {
+            return Decl{ .Union = try extractContainerData(allocator, tree, decl, container_decl) };
+        },
+        else => {},
+    }
+
+    return null;
+}
+
+fn parseVarDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?Decl {
     if (decl.ast.init_node == 0) return null;
 
     const node_tags = tree.nodes.items(.tag);
-    const token_tags = tree.tokens.items(.tag);
-    const main_tokens = tree.nodes.items(.main_token);
-
     const init_node_tag = node_tags[decl.ast.init_node];
-    if (init_node_tag == .container_decl_two or init_node_tag == .container_decl_two_trailing) {
-        var buffer: [2]Node.Index = undefined;
-        const container_decl = tree.containerDeclTwo(&buffer, decl.ast.init_node);
-        const main_token = main_tokens[container_decl.ast.main_token];
-        const token_tag = token_tags[main_token];
-        if (token_tag == .keyword_struct) {
-            const struct_name = try allocator.dupe(u8, tree.tokenSlice(decl.ast.mut_token + 1));
-            const struct_members = container_decl.ast.members;
 
-            var struct_fields = ArrayList(StructField).init(allocator);
-            errdefer struct_fields.deinit();
+    switch (init_node_tag) {
+        .container_decl,
+        .container_decl_trailing,
+        => {
+            const container_decl = tree.containerDecl(decl.ast.init_node);
+            return try parseContainerDecl(allocator, tree, decl, container_decl);
+        },
 
-            for (struct_members) |member_node| {
-                const member_tag = node_tags[member_node];
-                if (member_tag != .container_field_init) continue;
-
-                const container_field_init = tree.containerFieldInit(member_node);
-                const type_main_token = main_tokens[container_field_init.ast.type_expr];
-                const name_token = container_field_init.ast.name_token;
-
-                const field_type = try allocator.dupe(u8, tree.tokenSlice(type_main_token));
-                const field_name = try allocator.dupe(u8, tree.tokenSlice(name_token));
-                try struct_fields.append(.{ .name = field_name, .type = field_type });
-            }
-            return StructDecl{
-                .name = struct_name,
-                .fields = struct_fields.toOwnedSlice(),
-            };
-        }
+        .container_decl_two,
+        .container_decl_two_trailing,
+        => {
+            var buffer: [2]Node.Index = undefined;
+            const container_decl = tree.containerDeclTwo(&buffer, decl.ast.init_node);
+            return try parseContainerDecl(allocator, tree, decl, container_decl);
+        },
+        else => {},
     }
 
     return null;
@@ -183,66 +251,229 @@ const expectEqual = testing.expectEqual;
 const expectEqualStrings = testing.expectEqualStrings;
 const expectEqualSlices = testing.expectEqualSlices;
 
+// TODO Add test for struct with multiple fields
+
 test "struct decl" {
     const source =
         \\const Test = struct {
         \\    field1: i32,
+        \\};
+        \\
+        \\const Test2 = struct {
+        \\    field1: i32,
+        \\    field2: i32,
+        \\};
+        \\
+        \\const Test3 = struct {
+        \\    field1: i32,
+        \\    field2: i32,
+        \\    field3: i32,
         \\};
     ;
 
     var result = try parseZigSource(test_allocator, source);
     defer result.deinit();
 
-    try expectEqual(result.structs.len, 1);
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Struct = .{
+                    .name = "Test",
+                    .fields = &.{.{ .name = "field1", .type = "i32" }},
+                },
+            },
+            .{
+                .Struct = .{
+                    .name = "Test2",
+                    .fields = &.{
+                        .{ .name = "field1", .type = "i32" },
+                        .{ .name = "field2", .type = "i32" },
+                    },
+                },
+            },
+            .{
+                .Struct = .{
+                    .name = "Test3",
+                    .fields = &.{
+                        .{ .name = "field1", .type = "i32" },
+                        .{ .name = "field2", .type = "i32" },
+                        .{ .name = "field3", .type = "i32" },
+                    },
+                },
+            },
+        },
+    ));
+}
 
-    const decl = result.structs[0];
-    try expectEqualStrings("Test", decl.name);
+test "union decl" {
+    const source =
+        \\const Test = union {
+        \\    a: i32,
+        \\    b: u32,
+        \\};
+    ;
 
-    try expectEqual(decl.fields.len, 1);
-    try expectEqualStrings("field1", decl.fields[0].name);
-    try expectEqualStrings("i32", decl.fields[0].type);
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Union = .{
+                    .name = "Test",
+                    .fields = &.{
+                        .{ .name = "a", .type = "i32" },
+                        .{ .name = "b", .type = "u32" },
+                    },
+                },
+            },
+        },
+    ));
 }
 
 test "fn decl simple" {
-    const source =
-        \\fn testfn(a: i32) u32 {
-        \\    return a + 1;
-        \\}
-    ;
+   const source =
+       \\fn testfn(a: i32) u32 {
+       \\    return a + 1;
+       \\}
+   ;
 
-    var result = try parseZigSource(test_allocator, source);
-    defer result.deinit();
+   var result = try parseZigSource(test_allocator, source);
+   defer result.deinit();
 
-    try expectEqual(result.fns.len, 1);
-
-    const f = result.fns[0];
-    try expectEqualStrings("testfn", f.name);
-    try expectEqualStrings("u32", f.return_type);
-
-    try expectEqual(f.params.len, 1);
-    try expectEqualStrings("a", f.params[0].name);
-    try expectEqualStrings("i32", f.params[0].type);
+   try expect(deepEql(
+       result.fns,
+       &.{
+           .{
+               .name = "testfn",
+               .params = &.{.{ .name = "a", .type = "i32" }},
+               .return_type = "u32",
+               .is_extern = false,
+           },
+       },
+   ));
 }
 
 test "fn decl multi" {
-    const source =
-        \\fn testfn(a: i32, b: i32) u32 {
-        \\    return a + b;
-        \\}
-    ;
+   const source =
+       \\fn testfn(a: i32, b: i32) u32 {
+       \\    return a + b;
+       \\}
+   ;
 
-    var result = try parseZigSource(test_allocator, source);
-    defer result.deinit();
+   var result = try parseZigSource(test_allocator, source);
+   defer result.deinit();
 
-    try expectEqual(result.fns.len, 1);
+   try expect(deepEql(
+       result.fns,
+       &.{
+           .{
+               .name = "testfn",
+               .params = &.{
+                   .{ .name = "a", .type = "i32" },
+                   .{ .name = "b", .type = "i32" },
+               },
+               .return_type = "u32",
+               .is_extern = false,
+           },
+       },
+   ));
+}
 
-    const f = result.fns[0];
-    try expectEqualStrings("testfn", f.name);
-    try expectEqualStrings("u32", f.return_type);
+test "fn decl export" {
+   const source =
+       \\export fn testfn(a: i32) u32 {
+       \\    return a + 1;
+       \\}
+   ;
 
-    try expectEqual(f.params.len, 2);
-    try expectEqualStrings("a", f.params[0].name);
-    try expectEqualStrings("i32", f.params[0].type);
-    try expectEqualStrings("b", f.params[1].name);
-    try expectEqualStrings("i32", f.params[1].type);
+   var result = try parseZigSource(test_allocator, source);
+   defer result.deinit();
+
+   try expect(deepEql(
+       result.fns,
+       &.{
+           .{
+               .name = "testfn",
+               .params = &.{.{ .name = "a", .type = "i32" }},
+               .return_type = "u32",
+               .is_extern = true,
+           },
+       },
+   ));
+}
+
+/// Like std.meta.eql, but follows pointers where possible.
+fn deepEql(a: anytype, b: @TypeOf(a)) bool {
+    const T = @TypeOf(a);
+
+    switch (@typeInfo(T)) {
+        .Pointer => |info| {
+            return switch (info.size) {
+                .One => deepEql(a.*, b.*),
+                .Many, .C => a == b, // We don't know how many items are pointed to, so just compare addresses
+                .Slice => {
+                    if (a.len != b.len) return false;
+                    for (a) |item, index| {
+                        if (!deepEql(b[index], item)) {
+                            // std.log.warn("not eql {} {}", .{b[index], item});
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+            };
+        },
+        // The rest are copied from std.meta.eql (but calls to deepEql instead)
+        .Struct => |info| {
+            inline for (info.fields) |field_info| {
+                if (!deepEql(@field(a, field_info.name), @field(b, field_info.name))) return false;
+            }
+            return true;
+        },
+        .ErrorUnion => {
+            if (a) |a_p| {
+                if (b) |b_p| return deepEql(a_p, b_p) else |_| return false;
+            } else |a_e| {
+                if (b) |_| return false else |b_e| return a_e == b_e;
+            }
+        },
+        .Union => |info| {
+            if (info.tag_type) |UnionTag| {
+                const tag_a = std.meta.activeTag(a);
+                const tag_b = std.meta.activeTag(b);
+                if (tag_a != tag_b) return false;
+
+                inline for (info.fields) |field_info| {
+                    if (@field(UnionTag, field_info.name) == tag_a) {
+                        return deepEql(@field(a, field_info.name), @field(b, field_info.name));
+                    }
+                }
+                return false;
+            }
+
+            @compileError("cannot compare untagged union type " ++ @typeName(T));
+        },
+        .Array => {
+            if (a.len != b.len) return false;
+            for (a) |e, i|
+                if (!deepEql(e, b[i])) return false;
+            return true;
+        },
+        .Vector => |info| {
+            var i: usize = 0;
+            while (i < info.len) : (i += 1) {
+                if (!deepEql(a[i], b[i])) return false;
+            }
+            return true;
+        },
+        .Optional => {
+            if (a == null and b == null) return true;
+            if (a == null or b == null) return false;
+            return deepEql(a.?, b.?);
+        },
+        else => return a == b,
+    }
 }
