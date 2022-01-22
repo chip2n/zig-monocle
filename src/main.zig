@@ -250,18 +250,18 @@ const expectEqualSlices = testing.expectEqualSlices;
 test "struct decl" {
     const source =
         \\const Test = struct {
-        \\    field1: i32,
+        \\    a: i32,
         \\};
         \\
         \\const Test2 = struct {
-        \\    field1: i32,
-        \\    field2: i32,
+        \\    a: i32,
+        \\    b: i32,
         \\};
         \\
         \\const Test3 = struct {
-        \\    field1: i32,
-        \\    field2: i32,
-        \\    field3: i32,
+        \\    a: i32,
+        \\    b: i32,
+        \\    c: i32,
         \\};
     ;
 
@@ -274,15 +274,17 @@ test "struct decl" {
             .{
                 .Struct = .{
                     .name = "Test",
-                    .fields = &.{.{ .name = "field1", .type = "i32" }},
+                    .fields = &.{
+                        .{ .name = "a", .type = "i32" },
+                    },
                 },
             },
             .{
                 .Struct = .{
                     .name = "Test2",
                     .fields = &.{
-                        .{ .name = "field1", .type = "i32" },
-                        .{ .name = "field2", .type = "i32" },
+                        .{ .name = "a", .type = "i32" },
+                        .{ .name = "b", .type = "i32" },
                     },
                 },
             },
@@ -290,9 +292,9 @@ test "struct decl" {
                 .Struct = .{
                     .name = "Test3",
                     .fields = &.{
-                        .{ .name = "field1", .type = "i32" },
-                        .{ .name = "field2", .type = "i32" },
-                        .{ .name = "field3", .type = "i32" },
+                        .{ .name = "a", .type = "i32" },
+                        .{ .name = "b", .type = "i32" },
+                        .{ .name = "c", .type = "i32" },
                     },
                 },
             },
