@@ -42,7 +42,7 @@ pub const FunDecl = struct {
     name: []const u8,
     params: []const Param,
     return_type: []const u8,
-    is_extern: bool,
+    is_export: bool,
 };
 
 pub const ZigType = union {
@@ -151,7 +151,7 @@ fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?D
     const return_type = try allocator.dupe(u8, tree.tokenSlice(return_token));
 
     // TODO May have multiple tokens here, so we should scan until we hit the fn token probably
-    const is_extern = if (fn_proto.extern_export_inline_token) |t| blk: {
+    const is_export = if (fn_proto.extern_export_inline_token) |t| blk: {
         const t2 = token_tags[t];
         break :blk t2 == .keyword_export;
     } else false;
@@ -161,7 +161,7 @@ fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?D
             .name = name,
             .params = params.toOwnedSlice(),
             .return_type = return_type,
-            .is_extern = is_extern,
+            .is_export = is_export,
         },
     };
 }
@@ -373,7 +373,7 @@ test "fn decl simple" {
                     .name = "testfn",
                     .params = &.{.{ .name = "a", .type = "i32" }},
                     .return_type = "u32",
-                    .is_extern = false,
+                    .is_export = false,
                 },
             },
         },
@@ -401,7 +401,7 @@ test "fn decl multi" {
                         .{ .name = "b", .type = "i32" },
                     },
                     .return_type = "u32",
-                    .is_extern = false,
+                    .is_export = false,
                 },
             },
         },
@@ -426,7 +426,7 @@ test "fn decl export" {
                     .name = "testfn",
                     .params = &.{.{ .name = "a", .type = "i32" }},
                     .return_type = "u32",
-                    .is_extern = true,
+                    .is_export = true,
                 },
             },
         },
