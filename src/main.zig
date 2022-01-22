@@ -304,7 +304,17 @@ test "union decl" {
     const source =
         \\const Test = union {
         \\    a: i32,
+        \\};
+        \\
+        \\const Test2 = union {
+        \\    a: i32,
         \\    b: u32,
+        \\};
+        \\
+        \\const Test3 = union {
+        \\    a: i32,
+        \\    b: u32,
+        \\    c: u32,
         \\};
     ;
 
@@ -319,7 +329,25 @@ test "union decl" {
                     .name = "Test",
                     .fields = &.{
                         .{ .name = "a", .type = "i32" },
+                    },
+                },
+            },
+            .{
+                .Union = .{
+                    .name = "Test2",
+                    .fields = &.{
+                        .{ .name = "a", .type = "i32" },
                         .{ .name = "b", .type = "u32" },
+                    },
+                },
+            },
+            .{
+                .Union = .{
+                    .name = "Test3",
+                    .fields = &.{
+                        .{ .name = "a", .type = "i32" },
+                        .{ .name = "b", .type = "u32" },
+                        .{ .name = "c", .type = "u32" },
                     },
                 },
             },
