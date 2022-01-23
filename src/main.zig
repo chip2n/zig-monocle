@@ -28,15 +28,22 @@ pub const ContainerDecl = struct {
     fields: []const ContainerField,
 };
 
+pub const Type = union(enum) {
+    Raw: []const u8,
+    AnonymousContainer: struct {
+        fields: []const ContainerField,
+    },
+};
+
 pub const ContainerField = struct {
     name: []const u8,
-    type: []const u8,
+    type: Type,
 };
 
 pub const FunDecl = struct {
     const Param = struct {
         name: []const u8,
-        type: []const u8,
+        type: Type,
     };
 
     name: []const u8,
@@ -64,7 +71,9 @@ pub const PtrType = struct {
     size: std.builtin.TypeInfo.Pointer.Size,
 };
 
-pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) !ZigSource {
+const ParseError = error{OutOfMemory};
+
+pub fn parseZigSource(allocator: Allocator, source: [:0]const u8) ParseError!ZigSource {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
@@ -140,7 +149,7 @@ fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?D
                     const param_type = tree.tokenSlice(last_param + 2);
                     last_param += 2;
 
-                    try params.append(.{ .name = param_name, .type = param_type });
+                    try params.append(.{ .name = param_name, .type = .{ .Raw = param_type } });
                 }
             },
             else => {},
@@ -166,10 +175,9 @@ fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?D
     };
 }
 
-fn extractContainerData(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, container_decl: Ast.full.ContainerDecl) !ContainerDecl {
+fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.full.ContainerDecl) ParseError![]ContainerField {
     const node_tags = tree.nodes.items(.tag);
     const main_tokens = tree.nodes.items(.main_token);
-    const container_name = try allocator.dupe(u8, tree.tokenSlice(decl.ast.mut_token + 1));
     const container_members = container_decl.ast.members;
 
     var container_fields = ArrayList(ContainerField).init(allocator);
@@ -183,27 +191,50 @@ fn extractContainerData(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl,
         const type_main_token = main_tokens[container_field_init.ast.type_expr];
         const name_token = container_field_init.ast.name_token;
 
-        const field_type = try allocator.dupe(u8, tree.tokenSlice(type_main_token));
+        const field_type_tag = node_tags[container_field_init.ast.type_expr];
         const field_name = try allocator.dupe(u8, tree.tokenSlice(name_token));
-        try container_fields.append(.{ .name = field_name, .type = field_type });
+        switch (field_type_tag) {
+            .identifier => {
+                const field_type = try allocator.dupe(u8, tree.tokenSlice(type_main_token));
+                try container_fields.append(.{ .name = field_name, .type = .{ .Raw = field_type } });
+            },
+
+            .container_decl,
+            .container_decl_trailing,
+            => {
+                const field_container_decl = tree.containerDecl(container_field_init.ast.type_expr);
+                const field_container_fields = try extractContainerFields(allocator, tree, field_container_decl);
+                try container_fields.append(.{ .name = field_name, .type = .{ .AnonymousContainer = .{ .fields = field_container_fields } } });
+            },
+
+            .container_decl_two,
+            .container_decl_two_trailing,
+            => {
+                var buffer: [2]Node.Index = undefined;
+                const field_container_decl = tree.containerDeclTwo(&buffer, container_field_init.ast.type_expr);
+                const field_container_fields = try extractContainerFields(allocator, tree, field_container_decl);
+                try container_fields.append(.{ .name = field_name, .type = .{ .AnonymousContainer = .{ .fields = field_container_fields } } });
+            },
+
+            else => {},
+        }
     }
 
-    return ContainerDecl{
-        .name = container_name,
-        .fields = container_fields.toOwnedSlice(),
-    };
+    return container_fields.toOwnedSlice();
 }
 
 fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, container_decl: Ast.full.ContainerDecl) !?Decl {
     const token_tags = tree.tokens.items(.tag);
     const token_tag = token_tags[container_decl.ast.main_token];
 
+    const name = try allocator.dupe(u8, tree.tokenSlice(decl.ast.mut_token + 1));
+
     switch (token_tag) {
         .keyword_struct => {
-            return Decl{ .Struct = try extractContainerData(allocator, tree, decl, container_decl) };
+            return Decl{ .Struct = .{ .name = name, .fields = try extractContainerFields(allocator, tree, container_decl) } };
         },
         .keyword_union => {
-            return Decl{ .Union = try extractContainerData(allocator, tree, decl, container_decl) };
+            return Decl{ .Union = .{ .name = name, .fields = try extractContainerFields(allocator, tree, container_decl) } };
         },
         else => {},
     }
@@ -275,7 +306,7 @@ test "struct decl" {
                 .Struct = .{
                     .name = "Test",
                     .fields = &.{
-                        .{ .name = "a", .type = "i32" },
+                        .{ .name = "a", .type = .{ .Raw = "i32" } },
                     },
                 },
             },
@@ -283,8 +314,8 @@ test "struct decl" {
                 .Struct = .{
                     .name = "Test2",
                     .fields = &.{
-                        .{ .name = "a", .type = "i32" },
-                        .{ .name = "b", .type = "i32" },
+                        .{ .name = "a", .type = .{ .Raw = "i32" } },
+                        .{ .name = "b", .type = .{ .Raw = "i32" } },
                     },
                 },
             },
@@ -292,9 +323,9 @@ test "struct decl" {
                 .Struct = .{
                     .name = "Test3",
                     .fields = &.{
-                        .{ .name = "a", .type = "i32" },
-                        .{ .name = "b", .type = "i32" },
-                        .{ .name = "c", .type = "i32" },
+                        .{ .name = "a", .type = .{ .Raw = "i32" } },
+                        .{ .name = "b", .type = .{ .Raw = "i32" } },
+                        .{ .name = "c", .type = .{ .Raw = "i32" } },
                     },
                 },
             },
@@ -330,7 +361,7 @@ test "union decl" {
                 .Union = .{
                     .name = "Test",
                     .fields = &.{
-                        .{ .name = "a", .type = "i32" },
+                        .{ .name = "a", .type = .{ .Raw = "i32" } },
                     },
                 },
             },
@@ -338,8 +369,8 @@ test "union decl" {
                 .Union = .{
                     .name = "Test2",
                     .fields = &.{
-                        .{ .name = "a", .type = "i32" },
-                        .{ .name = "b", .type = "u32" },
+                        .{ .name = "a", .type = .{ .Raw = "i32" } },
+                        .{ .name = "b", .type = .{ .Raw = "u32" } },
                     },
                 },
             },
@@ -347,9 +378,115 @@ test "union decl" {
                 .Union = .{
                     .name = "Test3",
                     .fields = &.{
-                        .{ .name = "a", .type = "i32" },
-                        .{ .name = "b", .type = "u32" },
-                        .{ .name = "c", .type = "u32" },
+                        .{ .name = "a", .type = .{ .Raw = "i32" } },
+                        .{ .name = "b", .type = .{ .Raw = "u32" } },
+                        .{ .name = "c", .type = .{ .Raw = "u32" } },
+                    },
+                },
+            },
+        },
+    ));
+}
+
+test "anonymous struct" {
+    const source =
+        \\pub const Event = struct {
+        \\    field: struct { x: f32, y: f32 },
+        \\};
+    ;
+
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    std.log.warn("{s}", .{result.decls[0].Struct.fields[0].type.AnonymousContainer.fields[0].name});
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Struct = .{
+                    .name = "Event",
+                    .fields = &.{
+                        .{
+                            .name = "field",
+                            .type = .{
+                                .AnonymousContainer = .{
+                                    .fields = &.{
+                                        .{ .name = "x", .type = .{ .Raw = "f32" } },
+                                        .{ .name = "y", .type = .{ .Raw = "f32" } },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    ));
+}
+
+test "complex union" {
+    const source =
+        \\pub const Event = extern union {
+        \\    quit: void,
+        \\    cursor: struct { x: f32, y: f32 },
+        \\    input: InputEvent,
+        \\};
+        \\
+        \\pub const InputEvent = struct {
+        \\    const Key = enum {
+        \\        mouse_left,
+        \\        mouse_right,
+        \\        arrow_up,
+        \\        enter,
+        \\        escape,
+        \\        semicolon,
+        \\    };
+        \\
+        \\    const Action = enum { press, release };
+        \\
+        \\    key: Key,
+        \\    action: Action,
+        \\};
+    ;
+
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Union = .{
+                    .name = "Event",
+                    .fields = &.{
+                        .{ .name = "quit", .type = .{ .Raw = "void" } },
+                        .{
+                            .name = "cursor",
+                            .type = .{
+                                .AnonymousContainer = .{
+                                    .fields = &.{
+                                        .{ .name = "x", .type = .{ .Raw = "f32" } },
+                                        .{ .name = "y", .type = .{ .Raw = "f32" } },
+                                    },
+                                },
+                            },
+                        },
+                        .{
+                            .name = "input",
+                            .type = .{ .Raw = "InputEvent" },
+                        },
+                    },
+                    // TODO: is_extern
+                },
+            },
+            // TODO How do we handle nested structs?
+            .{
+                .Struct = .{
+                    .name = "InputEvent",
+                    .fields = &.{
+                        .{ .name = "key", .type = .{ .Raw = "Key" } },
+                        .{ .name = "action", .type = .{ .Raw = "Action" } },
                     },
                 },
             },
@@ -373,7 +510,7 @@ test "fn decl simple" {
             .{
                 .Fun = .{
                     .name = "testfn",
-                    .params = &.{.{ .name = "a", .type = "i32" }},
+                    .params = &.{.{ .name = "a", .type = .{ .Raw = "i32" } }},
                     .return_type = "u32",
                     .is_export = false,
                 },
@@ -399,8 +536,8 @@ test "fn decl multi" {
                 .Fun = .{
                     .name = "testfn",
                     .params = &.{
-                        .{ .name = "a", .type = "i32" },
-                        .{ .name = "b", .type = "i32" },
+                        .{ .name = "a", .type = .{ .Raw = "i32" } },
+                        .{ .name = "b", .type = .{ .Raw = "i32" } },
                     },
                     .return_type = "u32",
                     .is_export = false,
@@ -426,7 +563,7 @@ test "fn decl export" {
             .{
                 .Fun = .{
                     .name = "testfn",
-                    .params = &.{.{ .name = "a", .type = "i32" }},
+                    .params = &.{.{ .name = "a", .type = .{ .Raw = "i32" } }},
                     .return_type = "u32",
                     .is_export = true,
                 },
