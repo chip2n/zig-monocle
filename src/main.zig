@@ -20,12 +20,19 @@ pub const ZigSource = struct {
 pub const Decl = union(enum) {
     Struct: ContainerDecl,
     Union: ContainerDecl,
+    Enum: EnumDecl,
     Fun: FunDecl,
 };
 
 pub const ContainerDecl = struct {
     name: []const u8,
-    fields: []const ContainerField,
+    decls: []const Decl = &.{},
+    fields: []const ContainerField = &.{},
+};
+
+pub const EnumDecl = struct {
+    name: []const u8,
+    members: []const []const u8,
 };
 
 pub const Type = union(enum) {
@@ -223,6 +230,25 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
     return container_fields.toOwnedSlice();
 }
 
+fn extractContainerDecls(allocator: Allocator, tree: Ast, container_decl: Ast.full.ContainerDecl) ParseError![]Decl {
+    const node_tags = tree.nodes.items(.tag);
+    const container_members = container_decl.ast.members;
+
+    var container_decls = ArrayList(Decl).init(allocator);
+    errdefer container_decls.deinit();
+
+    for (container_members) |member_node| {
+        const member_tag = node_tags[member_node];
+        if (member_tag != .simple_var_decl) continue;
+
+        const decl = try parseVarDecl(allocator, tree, tree.simpleVarDecl(member_node));
+        std.log.warn("null? {}", .{decl});
+        if (decl) |d| try container_decls.append(d);
+    }
+
+    return container_decls.toOwnedSlice();
+}
+
 fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, container_decl: Ast.full.ContainerDecl) !?Decl {
     const token_tags = tree.tokens.items(.tag);
     const token_tag = token_tags[container_decl.ast.main_token];
@@ -231,10 +257,41 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
 
     switch (token_tag) {
         .keyword_struct => {
-            return Decl{ .Struct = .{ .name = name, .fields = try extractContainerFields(allocator, tree, container_decl) } };
+            return Decl{
+                .Struct = .{
+                    .name = name,
+                    .decls = try extractContainerDecls(allocator, tree, container_decl),
+                    .fields = try extractContainerFields(allocator, tree, container_decl),
+                },
+            };
         },
         .keyword_union => {
-            return Decl{ .Union = .{ .name = name, .fields = try extractContainerFields(allocator, tree, container_decl) } };
+            return Decl{
+                .Union = .{
+                    .name = name,
+                    .decls = try extractContainerDecls(allocator, tree, container_decl),
+                    .fields = try extractContainerFields(allocator, tree, container_decl),
+                },
+            };
+        },
+        .keyword_enum => {
+            var members = std.ArrayList([]const u8).init(allocator);
+            errdefer members.deinit();
+
+            const member_nodes = container_decl.ast.members;
+            for (member_nodes) |member_node| {
+                const container_field_init = tree.containerFieldInit(member_node);
+                const name_token = container_field_init.ast.name_token;
+                const field_name = try allocator.dupe(u8, tree.tokenSlice(name_token));
+
+                try members.append(field_name);
+            }
+            return Decl{
+                .Enum = .{
+                    .name = name,
+                    .members = members.toOwnedSlice(),
+                },
+            };
         },
         else => {},
     }
@@ -243,11 +300,13 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
 }
 
 fn parseVarDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?Decl {
+    std.log.warn("init node: {}", .{decl.ast.init_node});
     if (decl.ast.init_node == 0) return null;
 
     const node_tags = tree.nodes.items(.tag);
     const init_node_tag = node_tags[decl.ast.init_node];
 
+    std.log.warn("decl: {}", .{init_node_tag});
     switch (init_node_tag) {
         .container_decl,
         .container_decl_trailing,
@@ -388,6 +447,52 @@ test "union decl" {
     ));
 }
 
+test "enum decl" {
+    const source =
+        \\const Test = enum {
+        \\    a,
+        \\};
+        \\
+        \\const Test2 = enum {
+        \\    a,
+        \\    b
+        \\};
+        \\
+        \\const Test3 = enum {
+        \\    a,
+        \\    b,
+        \\    c,
+        \\};
+    ;
+
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Enum = .{
+                    .name = "Test",
+                    .members = &.{"a"},
+                },
+            },
+            .{
+                .Enum = .{
+                    .name = "Test2",
+                    .members = &.{ "a", "b" },
+                },
+            },
+            .{
+                .Enum = .{
+                    .name = "Test3",
+                    .members = &.{ "a", "b", "c" },
+                },
+            },
+        },
+    ));
+}
+
 test "anonymous struct" {
     const source =
         \\pub const Event = struct {
@@ -397,8 +502,6 @@ test "anonymous struct" {
 
     var result = try parseZigSource(test_allocator, source);
     defer result.deinit();
-
-    std.log.warn("{s}", .{result.decls[0].Struct.fields[0].type.AnonymousContainer.fields[0].name});
 
     try expect(deepEql(
         result.decls,
@@ -437,10 +540,6 @@ test "complex union" {
         \\    const Key = enum {
         \\        mouse_left,
         \\        mouse_right,
-        \\        arrow_up,
-        \\        enter,
-        \\        escape,
-        \\        semicolon,
         \\    };
         \\
         \\    const Action = enum { press, release };
@@ -480,10 +579,13 @@ test "complex union" {
                     // TODO: is_extern
                 },
             },
-            // TODO How do we handle nested structs?
             .{
                 .Struct = .{
                     .name = "InputEvent",
+                    .decls = &.{
+                        .{ .Enum = .{ .name = "Key", .members = &.{ "mouse_left", "mouse_right" } } },
+                        .{ .Enum = .{ .name = "Action", .members = &.{ "press", "release" } } },
+                    },
                     .fields = &.{
                         .{ .name = "key", .type = .{ .Raw = "Key" } },
                         .{ .name = "action", .type = .{ .Raw = "Action" } },
