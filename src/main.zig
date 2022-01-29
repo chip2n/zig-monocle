@@ -345,8 +345,6 @@ test "struct decl" {
     var result = try parseZigSource(test_allocator, source);
     defer result.deinit();
 
-    try expect(deepEql(result.decls[0].Struct.fields, &.{.{ .name = "a", .type = .{ .Raw = "i32" } }}));
-
     try expect(deepEql(
         result.decls,
         &.{
