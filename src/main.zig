@@ -7,6 +7,8 @@ const Token = Ast.TokenIndex;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
+const assert = std.debug.assert;
+
 pub const ZigSource = struct {
     arena: std.heap.ArenaAllocator,
 
@@ -27,6 +29,7 @@ const ContainerKind = enum { Struct, Enum, Union };
 pub const ContainerDecl = struct {
     kind: ContainerKind,
     name: []const u8,
+    tag_type: ?[]const u8 = null,
     decls: []const Decl = &.{},
     fields: []const ContainerField = &.{},
 };
@@ -34,6 +37,7 @@ pub const ContainerDecl = struct {
 // TODO Support nested declarations in anonymous container declarations
 pub const AnonymousContainerDecl = struct {
     kind: ContainerKind,
+    tag_type: ?[]const u8 = null,
     // decls: []const Decl = &.{},
     fields: []const ContainerField = &.{},
 };
@@ -279,11 +283,23 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
                     else => unreachable,
                 };
 
+                // TODO Copied - move into separate function
+                var tag_type: ?[]const u8 = null;
+                const arg = field_container_decl.ast.arg;
+                if (arg != 0) {
+                    // Are there other cases that we should support?
+                    assert(node_tags[arg] == .identifier);
+
+                    const arg_token = main_tokens[field_container_decl.ast.arg];
+                    tag_type = tree.tokenSlice(arg_token);
+                }
+
                 try container_fields.append(.{
                     .name = field_name,
                     .type = .{
                         .AnonymousContainer = .{
                             .kind = kind,
+                            .tag_type = tag_type,
                             .fields = field_container_fields,
                         },
                     },
@@ -316,6 +332,8 @@ fn extractContainerDecls(allocator: Allocator, tree: Ast, container_decl: Ast.fu
 }
 
 fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, container_decl: Ast.full.ContainerDecl) !?Decl {
+    const main_tokens = tree.nodes.items(.main_token);
+    const node_tags = tree.nodes.items(.tag);
     const token_tags = tree.tokens.items(.tag);
     const token_tag = token_tags[container_decl.ast.main_token];
 
@@ -343,10 +361,22 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
             };
         },
         .keyword_enum => {
+            var tag_type: ?[]const u8 = null;
+
+            const arg = container_decl.ast.arg;
+            if (arg != 0) {
+                // Are there other cases that we should support?
+                assert(node_tags[arg] == .identifier);
+
+                const arg_token = main_tokens[container_decl.ast.arg];
+                tag_type = tree.tokenSlice(arg_token);
+            }
+
             return Decl{
                 .Container = .{
                     .kind = .Enum,
                     .name = name,
+                    .tag_type = tag_type,
                     .fields = try extractContainerFields(allocator, tree, container_decl),
                 },
             };
@@ -580,6 +610,7 @@ test "enum with explicit tag type" {
                 .Container = .{
                     .kind = .Enum,
                     .name = "Test",
+                    .tag_type = "u8",
                     .fields = &.{
                         .{ .name = "a", .type = .EnumMember },
                         .{ .name = "b", .type = .EnumMember },
@@ -685,6 +716,7 @@ test "anonymous enum with explicit tag type" {
                             .type = .{
                                 .AnonymousContainer = .{
                                     .kind = .Enum,
+                                    .tag_type = "u8",
                                     .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } },
                                 },
                             },
