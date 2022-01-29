@@ -265,6 +265,31 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
                 });
             },
 
+            .container_decl_arg,
+            .container_decl_arg_trailing,
+            => {
+                const field_container_decl = tree.containerDeclArg(container_field_init.ast.type_expr);
+                const field_container_fields = try extractContainerFields(allocator, tree, field_container_decl);
+
+                // TODO This is done in multiple cases - refactor
+                const kind: ContainerKind = switch (token_tags[field_container_decl.ast.main_token]) {
+                    .keyword_struct => .Struct,
+                    .keyword_union => .Union,
+                    .keyword_enum => .Enum,
+                    else => unreachable,
+                };
+
+                try container_fields.append(.{
+                    .name = field_name,
+                    .type = .{
+                        .AnonymousContainer = .{
+                            .kind = kind,
+                            .fields = field_container_fields,
+                        },
+                    },
+                });
+            },
+
             else => {},
         }
     }
@@ -351,6 +376,13 @@ fn parseVarDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?Decl 
         => {
             var buffer: [2]Node.Index = undefined;
             const container_decl = tree.containerDeclTwo(&buffer, decl.ast.init_node);
+            return try parseContainerDecl(allocator, tree, decl, container_decl);
+        },
+
+        .container_decl_arg,
+        .container_decl_arg_trailing,
+        => {
+            const container_decl = tree.containerDeclArg(decl.ast.init_node);
             return try parseContainerDecl(allocator, tree, decl, container_decl);
         },
         else => {},
@@ -533,6 +565,32 @@ test "enum decl" {
     ));
 }
 
+test "enum with explicit tag type" {
+    const source =
+        \\const Test = enum(u8) { a, b, c };
+    ;
+
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Container = .{
+                    .kind = .Enum,
+                    .name = "Test",
+                    .fields = &.{
+                        .{ .name = "a", .type = .EnumMember },
+                        .{ .name = "b", .type = .EnumMember },
+                        .{ .name = "c", .type = .EnumMember },
+                    },
+                },
+            },
+        },
+    ));
+}
+
 test "anonymous struct" {
     const source =
         \\pub const Event = struct {
@@ -574,6 +632,40 @@ test "anonymous enum" {
     const source =
         \\pub const Test = struct {
         \\    field: enum { yes, no },
+        \\};
+    ;
+
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Container = .{
+                    .kind = .Struct,
+                    .name = "Test",
+                    .fields = &.{
+                        .{
+                            .name = "field",
+                            .type = .{
+                                .AnonymousContainer = .{
+                                    .kind = .Enum,
+                                    .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    ));
+}
+
+test "anonymous enum with explicit tag type" {
+    const source =
+        \\pub const Test = struct {
+        \\    field: enum(u8) { yes, no },
         \\};
     ;
 
