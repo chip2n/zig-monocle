@@ -31,9 +31,16 @@ pub const ContainerDecl = struct {
     fields: []const ContainerField = &.{},
 };
 
+// TODO Support nested declarations in anonymous container declarations
+pub const AnonymousContainerDecl = struct {
+    kind: ContainerKind,
+    // decls: []const Decl = &.{},
+    fields: []const ContainerField = &.{},
+};
+
 pub const Type = union(enum) {
     Raw: []const u8,
-    AnonymousContainer: struct { fields: []const ContainerField },
+    AnonymousContainer: AnonymousContainerDecl,
     EnumMember: void,
 };
 
@@ -180,6 +187,8 @@ fn parseFnProto(allocator: Allocator, tree: Ast, fn_proto: Ast.full.FnProto) !?D
 fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.full.ContainerDecl) ParseError![]ContainerField {
     const node_tags = tree.nodes.items(.tag);
     const main_tokens = tree.nodes.items(.main_token);
+    const token_tags = tree.tokens.items(.tag);
+
     const container_members = container_decl.ast.members;
 
     var container_fields = ArrayList(ContainerField).init(allocator);
@@ -212,7 +221,23 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
             => {
                 const field_container_decl = tree.containerDecl(container_field_init.ast.type_expr);
                 const field_container_fields = try extractContainerFields(allocator, tree, field_container_decl);
-                try container_fields.append(.{ .name = field_name, .type = .{ .AnonymousContainer = .{ .fields = field_container_fields } } });
+
+                const kind: ContainerKind = switch (token_tags[field_container_decl.ast.main_token]) {
+                    .keyword_struct => .Struct,
+                    .keyword_union => .Union,
+                    .keyword_enum => .Enum,
+                    else => unreachable,
+                };
+
+                try container_fields.append(.{
+                    .name = field_name,
+                    .type = .{
+                        .AnonymousContainer = .{
+                            .kind = kind,
+                            .fields = field_container_fields,
+                        },
+                    },
+                });
             },
 
             .container_decl_two,
@@ -221,7 +246,23 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
                 var buffer: [2]Node.Index = undefined;
                 const field_container_decl = tree.containerDeclTwo(&buffer, container_field_init.ast.type_expr);
                 const field_container_fields = try extractContainerFields(allocator, tree, field_container_decl);
-                try container_fields.append(.{ .name = field_name, .type = .{ .AnonymousContainer = .{ .fields = field_container_fields } } });
+
+                const kind: ContainerKind = switch (token_tags[field_container_decl.ast.main_token]) {
+                    .keyword_struct => .Struct,
+                    .keyword_union => .Union,
+                    .keyword_enum => .Enum,
+                    else => unreachable,
+                };
+
+                try container_fields.append(.{
+                    .name = field_name,
+                    .type = .{
+                        .AnonymousContainer = .{
+                            .kind = kind,
+                            .fields = field_container_fields,
+                        },
+                    },
+                });
             },
 
             else => {},
@@ -514,6 +555,7 @@ test "anonymous struct" {
                             .name = "field",
                             .type = .{
                                 .AnonymousContainer = .{
+                                    .kind = .Struct,
                                     .fields = &.{
                                         .{ .name = "x", .type = .{ .Raw = "f32" } },
                                         .{ .name = "y", .type = .{ .Raw = "f32" } },
@@ -548,7 +590,12 @@ test "anonymous enum" {
                     .fields = &.{
                         .{
                             .name = "field",
-                            .type = .{ .AnonymousContainer = .{ .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } } } },
+                            .type = .{
+                                .AnonymousContainer = .{
+                                    .kind = .Enum,
+                                    .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } },
+                                },
+                            },
                         },
                     },
                 },
@@ -594,6 +641,7 @@ test "complex union" {
                             .name = "cursor",
                             .type = .{
                                 .AnonymousContainer = .{
+                                    .kind = .Struct,
                                     .fields = &.{
                                         .{ .name = "x", .type = .{ .Raw = "f32" } },
                                         .{ .name = "y", .type = .{ .Raw = "f32" } },
