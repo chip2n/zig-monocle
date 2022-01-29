@@ -17,10 +17,11 @@ pub const ZigSource = struct {
     }
 };
 
+// TODO Instead of union, just add tag to ContainerDecl?
 pub const Decl = union(enum) {
     Struct: ContainerDecl,
     Union: ContainerDecl,
-    Enum: EnumDecl,
+    Enum: ContainerDecl,
     Fun: FunDecl,
 };
 
@@ -30,16 +31,10 @@ pub const ContainerDecl = struct {
     fields: []const ContainerField = &.{},
 };
 
-pub const EnumDecl = struct {
-    name: []const u8,
-    members: []const []const u8,
-};
-
 pub const Type = union(enum) {
     Raw: []const u8,
-    AnonymousContainer: struct {
-        fields: []const ContainerField,
-    },
+    AnonymousContainer: struct { fields: []const ContainerField },
+    EnumMember: void,
 };
 
 pub const ContainerField = struct {
@@ -200,7 +195,13 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
 
         const field_type_tag = node_tags[container_field_init.ast.type_expr];
         const field_name = try allocator.dupe(u8, tree.tokenSlice(name_token));
+
         switch (field_type_tag) {
+            .root => {
+                // No type - is enum value always in this case?
+                try container_fields.append(.{ .name = field_name, .type = .EnumMember });
+            },
+
             .identifier => {
                 const field_type = try allocator.dupe(u8, tree.tokenSlice(type_main_token));
                 try container_fields.append(.{ .name = field_name, .type = .{ .Raw = field_type } });
@@ -242,7 +243,6 @@ fn extractContainerDecls(allocator: Allocator, tree: Ast, container_decl: Ast.fu
         if (member_tag != .simple_var_decl) continue;
 
         const decl = try parseVarDecl(allocator, tree, tree.simpleVarDecl(member_node));
-        std.log.warn("null? {}", .{decl});
         if (decl) |d| try container_decls.append(d);
     }
 
@@ -275,21 +275,10 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
             };
         },
         .keyword_enum => {
-            var members = std.ArrayList([]const u8).init(allocator);
-            errdefer members.deinit();
-
-            const member_nodes = container_decl.ast.members;
-            for (member_nodes) |member_node| {
-                const container_field_init = tree.containerFieldInit(member_node);
-                const name_token = container_field_init.ast.name_token;
-                const field_name = try allocator.dupe(u8, tree.tokenSlice(name_token));
-
-                try members.append(field_name);
-            }
             return Decl{
                 .Enum = .{
                     .name = name,
-                    .members = members.toOwnedSlice(),
+                    .fields = try extractContainerFields(allocator, tree, container_decl),
                 },
             };
         },
@@ -300,13 +289,11 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
 }
 
 fn parseVarDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?Decl {
-    std.log.warn("init node: {}", .{decl.ast.init_node});
     if (decl.ast.init_node == 0) return null;
 
     const node_tags = tree.nodes.items(.tag);
     const init_node_tag = node_tags[decl.ast.init_node];
 
-    std.log.warn("decl: {}", .{init_node_tag});
     switch (init_node_tag) {
         .container_decl,
         .container_decl_trailing,
@@ -357,6 +344,8 @@ test "struct decl" {
 
     var result = try parseZigSource(test_allocator, source);
     defer result.deinit();
+
+    try expect(deepEql(result.decls[0].Struct.fields, &.{.{ .name = "a", .type = .{ .Raw = "i32" } }}));
 
     try expect(deepEql(
         result.decls,
@@ -474,19 +463,19 @@ test "enum decl" {
             .{
                 .Enum = .{
                     .name = "Test",
-                    .members = &.{"a"},
+                    .fields = &.{.{ .name = "a", .type = .EnumMember }},
                 },
             },
             .{
                 .Enum = .{
                     .name = "Test2",
-                    .members = &.{ "a", "b" },
+                    .fields = &.{ .{ .name = "a", .type = .EnumMember }, .{ .name = "b", .type = .EnumMember } },
                 },
             },
             .{
                 .Enum = .{
                     .name = "Test3",
-                    .members = &.{ "a", "b", "c" },
+                    .fields = &.{ .{ .name = "a", .type = .EnumMember }, .{ .name = "b", .type = .EnumMember }, .{ .name = "c", .type = .EnumMember } },
                 },
             },
         },
@@ -520,6 +509,34 @@ test "anonymous struct" {
                                     },
                                 },
                             },
+                        },
+                    },
+                },
+            },
+        },
+    ));
+}
+
+test "anonymous enum" {
+    const source =
+        \\pub const Test = struct {
+        \\    field: enum { yes, no },
+        \\};
+    ;
+
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{
+                .Struct = .{
+                    .name = "Test",
+                    .fields = &.{
+                        .{
+                            .name = "field",
+                            .type = .{ .AnonymousContainer = .{ .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } } } },
                         },
                     },
                 },
@@ -583,8 +600,8 @@ test "complex union" {
                 .Struct = .{
                     .name = "InputEvent",
                     .decls = &.{
-                        .{ .Enum = .{ .name = "Key", .members = &.{ "mouse_left", "mouse_right" } } },
-                        .{ .Enum = .{ .name = "Action", .members = &.{ "press", "release" } } },
+                        .{ .Enum = .{ .name = "Key", .fields = &.{ .{ .name = "mouse_left", .type = .EnumMember }, .{ .name = "mouse_right", .type = .EnumMember } } } },
+                        .{ .Enum = .{ .name = "Action", .fields = &.{ .{ .name = "press", .type = .EnumMember }, .{ .name = "release", .type = .EnumMember } } } },
                     },
                     .fields = &.{
                         .{ .name = "key", .type = .{ .Raw = "Key" } },
