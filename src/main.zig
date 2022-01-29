@@ -289,24 +289,13 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
                     else => unreachable,
                 };
 
-                // TODO Copied - move into separate function
-                var tag_type: ?[]const u8 = null;
-                const arg = field_container_decl.ast.arg;
-                if (arg != 0) {
-                    // Are there other cases that we should support?
-                    assert(node_tags[arg] == .identifier);
-
-                    const arg_token = main_tokens[field_container_decl.ast.arg];
-                    tag_type = tree.tokenSlice(arg_token);
-                }
-
                 try container_fields.append(.{
                     .name = field_name,
                     .type = .{
                         .AnonymousContainer = .{
                             .data = .{
                                 .kind = kind,
-                                .tag_type = tag_type,
+                                .tag_type = extractTagType(tree, field_container_decl),
                                 .fields = field_container_fields,
                             },
                         },
@@ -321,27 +310,7 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
     return container_fields.toOwnedSlice();
 }
 
-fn extractContainerDecls(allocator: Allocator, tree: Ast, container_decl: Ast.full.ContainerDecl) ParseError![]Decl {
-    const node_tags = tree.nodes.items(.tag);
-    const container_members = container_decl.ast.members;
-
-    var container_decls = ArrayList(Decl).init(allocator);
-    errdefer container_decls.deinit();
-
-    for (container_members) |member_node| {
-        const member_tag = node_tags[member_node];
-        if (member_tag != .simple_var_decl) continue;
-
-        const decl = try parseVarDecl(allocator, tree, tree.simpleVarDecl(member_node));
-        if (decl) |d| try container_decls.append(d);
-    }
-
-    return container_decls.toOwnedSlice();
-}
-
 fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, container_decl: Ast.full.ContainerDecl) !?Decl {
-    const main_tokens = tree.nodes.items(.main_token);
-    const node_tags = tree.nodes.items(.tag);
     const token_tags = tree.tokens.items(.tag);
     const token_tag = token_tags[container_decl.ast.main_token];
 
@@ -354,6 +323,7 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
                     .name = name,
                     .data = .{
                         .kind = .Struct,
+                        .tag_type = extractTagType(tree, container_decl),
                         .decls = try extractContainerDecls(allocator, tree, container_decl),
                         .fields = try extractContainerFields(allocator, tree, container_decl),
                     },
@@ -366,6 +336,7 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
                     .name = name,
                     .data = .{
                         .kind = .Union,
+                        .tag_type = extractTagType(tree, container_decl),
                         .decls = try extractContainerDecls(allocator, tree, container_decl),
                         .fields = try extractContainerFields(allocator, tree, container_decl),
                     },
@@ -373,23 +344,12 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
             };
         },
         .keyword_enum => {
-            var tag_type: ?[]const u8 = null;
-
-            const arg = container_decl.ast.arg;
-            if (arg != 0) {
-                // Are there other cases that we should support?
-                assert(node_tags[arg] == .identifier);
-
-                const arg_token = main_tokens[container_decl.ast.arg];
-                tag_type = tree.tokenSlice(arg_token);
-            }
-
             return Decl{
                 .Container = .{
                     .name = name,
                     .data = .{
                         .kind = .Enum,
-                        .tag_type = tag_type,
+                        .tag_type = extractTagType(tree, container_decl),
                         .fields = try extractContainerFields(allocator, tree, container_decl),
                     },
                 },
@@ -433,6 +393,41 @@ fn parseVarDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?Decl 
     }
 
     return null;
+}
+
+fn extractTagType(tree: Ast, container_decl: Ast.full.ContainerDecl) ?[]const u8 {
+    const main_tokens = tree.nodes.items(.main_token);
+    const node_tags = tree.nodes.items(.tag);
+
+    var tag_type: ?[]const u8 = null;
+    const arg = container_decl.ast.arg;
+    if (arg != 0) {
+        // Are there other cases that we should support?
+        assert(node_tags[arg] == .identifier);
+
+        const arg_token = main_tokens[container_decl.ast.arg];
+        tag_type = tree.tokenSlice(arg_token);
+    }
+
+    return tag_type;
+}
+
+fn extractContainerDecls(allocator: Allocator, tree: Ast, container_decl: Ast.full.ContainerDecl) ParseError![]Decl {
+    const node_tags = tree.nodes.items(.tag);
+    const container_members = container_decl.ast.members;
+
+    var container_decls = ArrayList(Decl).init(allocator);
+    errdefer container_decls.deinit();
+
+    for (container_members) |member_node| {
+        const member_tag = node_tags[member_node];
+        if (member_tag != .simple_var_decl) continue;
+
+        const decl = try parseVarDecl(allocator, tree, tree.simpleVarDecl(member_node));
+        if (decl) |d| try container_decls.append(d);
+    }
+
+    return container_decls.toOwnedSlice();
 }
 
 // * Tests
