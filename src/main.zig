@@ -1,3 +1,5 @@
+// TODO Support nested declarations in anonymous container declarations
+
 const std = @import("std");
 const zig = std.zig;
 const Ast = zig.Ast;
@@ -27,18 +29,18 @@ pub const Decl = union(enum) {
 const ContainerKind = enum { Struct, Enum, Union };
 
 pub const ContainerDecl = struct {
-    kind: ContainerKind,
     name: []const u8,
-    tag_type: ?[]const u8 = null,
-    decls: []const Decl = &.{},
-    fields: []const ContainerField = &.{},
+    data: ContainerData,
 };
 
-// TODO Support nested declarations in anonymous container declarations
 pub const AnonymousContainerDecl = struct {
+    data: ContainerData,
+};
+
+pub const ContainerData = struct {
     kind: ContainerKind,
     tag_type: ?[]const u8 = null,
-    // decls: []const Decl = &.{},
+    decls: []const Decl = &.{},
     fields: []const ContainerField = &.{},
 };
 
@@ -237,8 +239,10 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
                     .name = field_name,
                     .type = .{
                         .AnonymousContainer = .{
-                            .kind = kind,
-                            .fields = field_container_fields,
+                            .data = .{
+                                .kind = kind,
+                                .fields = field_container_fields,
+                            },
                         },
                     },
                 });
@@ -262,8 +266,10 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
                     .name = field_name,
                     .type = .{
                         .AnonymousContainer = .{
-                            .kind = kind,
-                            .fields = field_container_fields,
+                            .data = .{
+                                .kind = kind,
+                                .fields = field_container_fields,
+                            },
                         },
                     },
                 });
@@ -298,9 +304,11 @@ fn extractContainerFields(allocator: Allocator, tree: Ast, container_decl: Ast.f
                     .name = field_name,
                     .type = .{
                         .AnonymousContainer = .{
-                            .kind = kind,
-                            .tag_type = tag_type,
-                            .fields = field_container_fields,
+                            .data = .{
+                                .kind = kind,
+                                .tag_type = tag_type,
+                                .fields = field_container_fields,
+                            },
                         },
                     },
                 });
@@ -343,20 +351,24 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
         .keyword_struct => {
             return Decl{
                 .Container = .{
-                    .kind = .Struct,
                     .name = name,
-                    .decls = try extractContainerDecls(allocator, tree, container_decl),
-                    .fields = try extractContainerFields(allocator, tree, container_decl),
+                    .data = .{
+                        .kind = .Struct,
+                        .decls = try extractContainerDecls(allocator, tree, container_decl),
+                        .fields = try extractContainerFields(allocator, tree, container_decl),
+                    },
                 },
             };
         },
         .keyword_union => {
             return Decl{
                 .Container = .{
-                    .kind = .Union,
                     .name = name,
-                    .decls = try extractContainerDecls(allocator, tree, container_decl),
-                    .fields = try extractContainerFields(allocator, tree, container_decl),
+                    .data = .{
+                        .kind = .Union,
+                        .decls = try extractContainerDecls(allocator, tree, container_decl),
+                        .fields = try extractContainerFields(allocator, tree, container_decl),
+                    },
                 },
             };
         },
@@ -374,10 +386,12 @@ fn parseContainerDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl, c
 
             return Decl{
                 .Container = .{
-                    .kind = .Enum,
                     .name = name,
-                    .tag_type = tag_type,
-                    .fields = try extractContainerFields(allocator, tree, container_decl),
+                    .data = .{
+                        .kind = .Enum,
+                        .tag_type = tag_type,
+                        .fields = try extractContainerFields(allocator, tree, container_decl),
+                    },
                 },
             };
         },
@@ -456,31 +470,37 @@ test "struct decl" {
         &.{
             .{
                 .Container = .{
-                    .kind = .Struct,
                     .name = "Test",
-                    .fields = &.{
-                        .{ .name = "a", .type = .{ .Raw = "i32" } },
+                    .data = .{
+                        .kind = .Struct,
+                        .fields = &.{
+                            .{ .name = "a", .type = .{ .Raw = "i32" } },
+                        },
                     },
                 },
             },
             .{
                 .Container = .{
-                    .kind = .Struct,
                     .name = "Test2",
-                    .fields = &.{
-                        .{ .name = "a", .type = .{ .Raw = "i32" } },
-                        .{ .name = "b", .type = .{ .Raw = "i32" } },
+                    .data = .{
+                        .kind = .Struct,
+                        .fields = &.{
+                            .{ .name = "a", .type = .{ .Raw = "i32" } },
+                            .{ .name = "b", .type = .{ .Raw = "i32" } },
+                        },
                     },
                 },
             },
             .{
                 .Container = .{
-                    .kind = .Struct,
                     .name = "Test3",
-                    .fields = &.{
-                        .{ .name = "a", .type = .{ .Raw = "i32" } },
-                        .{ .name = "b", .type = .{ .Raw = "i32" } },
-                        .{ .name = "c", .type = .{ .Raw = "i32" } },
+                    .data = .{
+                        .kind = .Struct,
+                        .fields = &.{
+                            .{ .name = "a", .type = .{ .Raw = "i32" } },
+                            .{ .name = "b", .type = .{ .Raw = "i32" } },
+                            .{ .name = "c", .type = .{ .Raw = "i32" } },
+                        },
                     },
                 },
             },
@@ -514,31 +534,37 @@ test "union decl" {
         &.{
             .{
                 .Container = .{
-                    .kind = .Union,
                     .name = "Test",
-                    .fields = &.{
-                        .{ .name = "a", .type = .{ .Raw = "i32" } },
+                    .data = .{
+                        .kind = .Union,
+                        .fields = &.{
+                            .{ .name = "a", .type = .{ .Raw = "i32" } },
+                        },
                     },
                 },
             },
             .{
                 .Container = .{
-                    .kind = .Union,
                     .name = "Test2",
-                    .fields = &.{
-                        .{ .name = "a", .type = .{ .Raw = "i32" } },
-                        .{ .name = "b", .type = .{ .Raw = "u32" } },
+                    .data = .{
+                        .kind = .Union,
+                        .fields = &.{
+                            .{ .name = "a", .type = .{ .Raw = "i32" } },
+                            .{ .name = "b", .type = .{ .Raw = "u32" } },
+                        },
                     },
                 },
             },
             .{
                 .Container = .{
-                    .kind = .Union,
                     .name = "Test3",
-                    .fields = &.{
-                        .{ .name = "a", .type = .{ .Raw = "i32" } },
-                        .{ .name = "b", .type = .{ .Raw = "u32" } },
-                        .{ .name = "c", .type = .{ .Raw = "u32" } },
+                    .data = .{
+                        .kind = .Union,
+                        .fields = &.{
+                            .{ .name = "a", .type = .{ .Raw = "i32" } },
+                            .{ .name = "b", .type = .{ .Raw = "u32" } },
+                            .{ .name = "c", .type = .{ .Raw = "u32" } },
+                        },
                     },
                 },
             },
@@ -572,23 +598,29 @@ test "enum decl" {
         &.{
             .{
                 .Container = .{
-                    .kind = .Enum,
                     .name = "Test",
-                    .fields = &.{.{ .name = "a", .type = .EnumMember }},
+                    .data = .{
+                        .kind = .Enum,
+                        .fields = &.{.{ .name = "a", .type = .EnumMember }},
+                    },
                 },
             },
             .{
                 .Container = .{
-                    .kind = .Enum,
                     .name = "Test2",
-                    .fields = &.{ .{ .name = "a", .type = .EnumMember }, .{ .name = "b", .type = .EnumMember } },
+                    .data = .{
+                        .kind = .Enum,
+                        .fields = &.{ .{ .name = "a", .type = .EnumMember }, .{ .name = "b", .type = .EnumMember } },
+                    },
                 },
             },
             .{
                 .Container = .{
-                    .kind = .Enum,
                     .name = "Test3",
-                    .fields = &.{ .{ .name = "a", .type = .EnumMember }, .{ .name = "b", .type = .EnumMember }, .{ .name = "c", .type = .EnumMember } },
+                    .data = .{
+                        .kind = .Enum,
+                        .fields = &.{ .{ .name = "a", .type = .EnumMember }, .{ .name = "b", .type = .EnumMember }, .{ .name = "c", .type = .EnumMember } },
+                    },
                 },
             },
         },
@@ -608,13 +640,15 @@ test "enum with explicit tag type" {
         &.{
             .{
                 .Container = .{
-                    .kind = .Enum,
                     .name = "Test",
-                    .tag_type = "u8",
-                    .fields = &.{
-                        .{ .name = "a", .type = .EnumMember },
-                        .{ .name = "b", .type = .EnumMember },
-                        .{ .name = "c", .type = .EnumMember },
+                    .data = .{
+                        .kind = .Enum,
+                        .tag_type = "u8",
+                        .fields = &.{
+                            .{ .name = "a", .type = .EnumMember },
+                            .{ .name = "b", .type = .EnumMember },
+                            .{ .name = "c", .type = .EnumMember },
+                        },
                     },
                 },
             },
@@ -637,17 +671,21 @@ test "anonymous struct" {
         &.{
             .{
                 .Container = .{
-                    .kind = .Struct,
                     .name = "Event",
-                    .fields = &.{
-                        .{
-                            .name = "field",
-                            .type = .{
-                                .AnonymousContainer = .{
-                                    .kind = .Struct,
-                                    .fields = &.{
-                                        .{ .name = "x", .type = .{ .Raw = "f32" } },
-                                        .{ .name = "y", .type = .{ .Raw = "f32" } },
+                    .data = .{
+                        .kind = .Struct,
+                        .fields = &.{
+                            .{
+                                .name = "field",
+                                .type = .{
+                                    .AnonymousContainer = .{
+                                        .data = .{
+                                            .kind = .Struct,
+                                            .fields = &.{
+                                                .{ .name = "x", .type = .{ .Raw = "f32" } },
+                                                .{ .name = "y", .type = .{ .Raw = "f32" } },
+                                            },
+                                        },
                                     },
                                 },
                             },
@@ -674,15 +712,19 @@ test "anonymous enum" {
         &.{
             .{
                 .Container = .{
-                    .kind = .Struct,
                     .name = "Test",
-                    .fields = &.{
-                        .{
-                            .name = "field",
-                            .type = .{
-                                .AnonymousContainer = .{
-                                    .kind = .Enum,
-                                    .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } },
+                    .data = .{
+                        .kind = .Struct,
+                        .fields = &.{
+                            .{
+                                .name = "field",
+                                .type = .{
+                                    .AnonymousContainer = .{
+                                        .data = .{
+                                            .kind = .Enum,
+                                            .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -708,16 +750,20 @@ test "anonymous enum with explicit tag type" {
         &.{
             .{
                 .Container = .{
-                    .kind = .Struct,
                     .name = "Test",
-                    .fields = &.{
-                        .{
-                            .name = "field",
-                            .type = .{
-                                .AnonymousContainer = .{
-                                    .kind = .Enum,
-                                    .tag_type = "u8",
-                                    .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } },
+                    .data = .{
+                        .kind = .Struct,
+                        .fields = &.{
+                            .{
+                                .name = "field",
+                                .type = .{
+                                    .AnonymousContainer = .{
+                                        .data = .{
+                                            .kind = .Enum,
+                                            .tag_type = "u8",
+                                            .fields = &.{ .{ .name = "yes", .type = .EnumMember }, .{ .name = "no", .type = .EnumMember } },
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -752,58 +798,68 @@ test "complex union" {
     var result = try parseZigSource(test_allocator, source);
     defer result.deinit();
 
+    // TODO: is_extern
     try expect(deepEql(
         result.decls,
         &.{
             .{
                 .Container = .{
-                    .kind = .Union,
                     .name = "Event",
-                    .fields = &.{
-                        .{ .name = "quit", .type = .{ .Raw = "void" } },
-                        .{
-                            .name = "cursor",
-                            .type = .{
-                                .AnonymousContainer = .{
-                                    .kind = .Struct,
-                                    .fields = &.{
-                                        .{ .name = "x", .type = .{ .Raw = "f32" } },
-                                        .{ .name = "y", .type = .{ .Raw = "f32" } },
+                    .data = .{
+                        .kind = .Union,
+                        .fields = &.{
+                            .{ .name = "quit", .type = .{ .Raw = "void" } },
+                            .{
+                                .name = "cursor",
+                                .type = .{
+                                    .AnonymousContainer = .{
+                                        .data = .{
+                                            .kind = .Struct,
+                                            .fields = &.{
+                                                .{ .name = "x", .type = .{ .Raw = "f32" } },
+                                                .{ .name = "y", .type = .{ .Raw = "f32" } },
+                                            },
+                                        },
                                     },
                                 },
                             },
-                        },
-                        .{
-                            .name = "input",
-                            .type = .{ .Raw = "InputEvent" },
+                            .{
+                                .name = "input",
+                                .type = .{ .Raw = "InputEvent" },
+                            },
                         },
                     },
-                    // TODO: is_extern
                 },
             },
             .{
                 .Container = .{
-                    .kind = .Struct,
                     .name = "InputEvent",
-                    .decls = &.{
-                        .{
-                            .Container = .{
-                                .kind = .Enum,
-                                .name = "Key",
-                                .fields = &.{ .{ .name = "mouse_left", .type = .EnumMember }, .{ .name = "mouse_right", .type = .EnumMember } },
+                    .data = .{
+                        .kind = .Struct,
+                        .decls = &.{
+                            .{
+                                .Container = .{
+                                    .name = "Key",
+                                    .data = .{
+                                        .kind = .Enum,
+                                        .fields = &.{ .{ .name = "mouse_left", .type = .EnumMember }, .{ .name = "mouse_right", .type = .EnumMember } },
+                                    },
+                                },
+                            },
+                            .{
+                                .Container = .{
+                                    .name = "Action",
+                                    .data = .{
+                                        .kind = .Enum,
+                                        .fields = &.{ .{ .name = "press", .type = .EnumMember }, .{ .name = "release", .type = .EnumMember } },
+                                    },
+                                },
                             },
                         },
-                        .{
-                            .Container = .{
-                                .kind = .Enum,
-                                .name = "Action",
-                                .fields = &.{ .{ .name = "press", .type = .EnumMember }, .{ .name = "release", .type = .EnumMember } },
-                            },
+                        .fields = &.{
+                            .{ .name = "key", .type = .{ .Raw = "Key" } },
+                            .{ .name = "action", .type = .{ .Raw = "Action" } },
                         },
-                    },
-                    .fields = &.{
-                        .{ .name = "key", .type = .{ .Raw = "Key" } },
-                        .{ .name = "action", .type = .{ .Raw = "Action" } },
                     },
                 },
             },
