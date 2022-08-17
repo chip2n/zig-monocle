@@ -1,4 +1,5 @@
 * zig-monocle
+[[https://github.com/chip2n/zig-monocle/workflows/CI/badge.svg]]
 
 Inspect Zig source files (WIP)
 
