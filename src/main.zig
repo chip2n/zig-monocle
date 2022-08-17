@@ -22,8 +22,14 @@ pub const ZigSource = struct {
 };
 
 pub const Decl = union(enum) {
+    Import: ImportDecl,
     Container: ContainerDecl,
     Fun: FunDecl,
+};
+
+pub const ImportDecl = struct {
+    name: []const u8,
+    path: []const u8,
 };
 
 const ContainerKind = enum { Struct, Enum, Union };
@@ -389,7 +395,32 @@ fn parseVarDecl(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?Decl 
             const container_decl = tree.containerDeclArg(decl.ast.init_node);
             return try parseContainerDecl(allocator, tree, decl, container_decl);
         },
+        .builtin_call => {},
+        .builtin_call_comma => {},
+        .builtin_call_two => {
+            return try parseBuiltinCallTwo(allocator, tree, decl);
+        },
+        .builtin_call_two_comma => {
+            return try parseBuiltinCallTwo(allocator, tree, decl);
+        },
         else => {},
+    }
+
+    return null;
+}
+
+fn parseBuiltinCallTwo(allocator: Allocator, tree: Ast, decl: Ast.full.VarDecl) !?Decl {
+    const data = tree.nodes.items(.data)[decl.ast.init_node];
+    const main_tokens = tree.nodes.items(.main_token);
+    const main_token = main_tokens[decl.ast.init_node];
+
+    if (std.mem.eql(u8, tree.tokenSlice(main_token), "@import")) {
+        const name = try allocator.dupe(u8, tree.tokenSlice(decl.ast.mut_token + 1));
+        const path_str = tree.tokenSlice(main_tokens[data.lhs]);
+        // Strip quotation marks
+        const path = try allocator.dupe(u8, path_str[1 .. path_str.len - 1]);
+
+        return Decl{ .Import = .{ .name = name, .path = path } };
     }
 
     return null;
@@ -936,6 +967,24 @@ test "fn decl export" {
                     .is_export = true,
                 },
             },
+        },
+    ));
+}
+
+test "import" {
+    const source =
+        \\const a = @import("ai.zig");
+        \\const b = @import("bi.zig",);
+    ;
+
+    var result = try parseZigSource(test_allocator, source);
+    defer result.deinit();
+
+    try expect(deepEql(
+        result.decls,
+        &.{
+            .{ .Import = .{ .name = "a", .path = "ai.zig" } },
+            .{ .Import = .{ .name = "b", .path = "bi.zig" } },
         },
     ));
 }
